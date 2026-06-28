@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from metaapi_cloud_sdk import MetaApi
@@ -5,7 +6,7 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# Permissão de segurança para o Tiiny.host aceder ao Render
+# Permissão de segurança para o seu Tiiny.host aceder ao Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,25 +15,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# CREDENCIAIS TRAVADAS DIRETAMENTE NO MOTOR
-API_TOKEN = "80fa4a51-740e-4aab-ade6-18bdcf2787fe"
-ACCOUNT_ID = "196642206"
+# Puxa as variáveis de ambiente configuradas no painel do Render
+API_TOKEN = os.getenv("METAAPI_TOKEN", "").strip()
+ACCOUNT_ID = os.getenv("META_ACCOUNT_ID", "").strip()
 
 @app.get("/")
 async def get_status():
+    # Validação inicial para o log do Render
+    if not API_TOKEN or not ACCOUNT_ID:
+        return {
+            "status": "ERRO: Chaves nao encontradas no Render",
+            "wins": 0, "losses": 0, "grafico": [0]*7
+        }
+    
     try:
         api = MetaApi(API_TOKEN)
         account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
         
-        # Sincronização automática com a MetaAPI
-        if account.connection_status != 'CONNECTED':
-            await account.connect()
+        # Se a conta estiver offline ou undeployed, força o deploy automático
+        if account.state != 'DEPLOYED':
+            await account.deploy()
+            return {
+                "status": "IA ACORDANDO CONTA... AGUARDE 60 SEGUNDOS",
+                "wins": 0, "losses": 0, "grafico": [0]*7
+            }
         
+        # Conexão direta via RPC (Sincronizada)
         connection = account.get_rpc_connection()
         await connection.connect()
         await connection.wait_synchronized()
         
-        # Puxa o histórico dos últimos 30 dias na Exness
+        # Puxa o histórico operacional dos últimos 30 dias
         desde_data = datetime.now() - timedelta(days=30)
         historico = await connection.get_history_orders_by_time_range(desde_data, datetime.now())
         
@@ -41,7 +54,7 @@ async def get_status():
         valores_grafico = [0]
         saldo_acumulado = 0
         
-        # Varre as ordens fechadas para obter os resultados reais
+        # Separação minuciosa de ordens de Gain e Loss
         for ordem in historico.get('historyOrders', []):
             profit = ordem.get('profit', 0)
             if profit > 0:
@@ -53,22 +66,20 @@ async def get_status():
                 saldo_acumulado += profit
                 valores_grafico.append(round(saldo_acumulado, 2))
 
-        # Garante que o gráfico tem dados suficientes para exibição
+        # Alinha o gráfico para nunca quebrar o layout do Tiiny.host
         if len(valores_grafico) < 7:
             valores_grafico = (valores_grafico + [valores_grafico[-1]] * (7 - len(valores_grafico)))
 
         return {
             "status": "CONECTADO COM SUCESSO",
-            "conta": ACCOUNT_ID,
             "wins": wins,
             "losses": losses,
             "grafico": valores_grafico[-7:]
         }
     except Exception as e:
+        # Retorna o erro real resumido para você ver direto na tela do celular
+        erro_msg = str(e)[:30].upper()
         return {
-            "status": "ERRO DE CONEXÃO EXNESS",
-            "conta": ACCOUNT_ID,
-            "wins": 0,
-            "losses": 0,
-            "grafico": [0, 0, 0, 0, 0, 0, 0]
+            "status": f"ERRO DE CONEXÃO: {erro_msg}",
+            "wins": 0, "losses": 0, "grafico": [0]*7
         }
