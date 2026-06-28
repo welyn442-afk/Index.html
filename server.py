@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 app = FastAPI()
 
-# Permissão de segurança para o Tiiny.host acessar o Render
+# Permissão de segurança para o Tiiny.host aceder ao Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,7 +14,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SUAS CHAVES REAIS TRAVADAS DIRETAMENTE NO MOTOR DO SISTEMA
+# CREDENCIAIS TRAVADAS DIRETAMENTE NO MOTOR
 API_TOKEN = "80fa4a51-740e-4aab-ade6-18bdcf2787fe"
 ACCOUNT_ID = "196642206"
 
@@ -24,7 +24,7 @@ async def get_status():
         api = MetaApi(API_TOKEN)
         account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
         
-        # Força a reconexão automática caso o servidor mude de estado
+        # Sincronização automática com a MetaAPI
         if account.connection_status != 'CONNECTED':
             await account.connect()
         
@@ -32,7 +32,7 @@ async def get_status():
         await connection.connect()
         await connection.wait_synchronized()
         
-        # Puxa o histórico real de ordens fechadas na Exness (últimos 30 dias)
+        # Puxa o histórico dos últimos 30 dias na Exness
         desde_data = datetime.now() - timedelta(days=30)
         historico = await connection.get_history_orders_by_time_range(desde_data, datetime.now())
         
@@ -41,7 +41,7 @@ async def get_status():
         valores_grafico = [0]
         saldo_acumulado = 0
         
-        # Varre o histórico do MT5 calculando Vitórias e Derrotas Reais
+        # Varre as ordens fechadas para obter os resultados reais
         for ordem in historico.get('historyOrders', []):
             profit = ordem.get('profit', 0)
             if profit > 0:
@@ -53,7 +53,7 @@ async def get_status():
                 saldo_acumulado += profit
                 valores_grafico.append(round(saldo_acumulado, 2))
 
-        # Ajusta o gráfico para ter sempre 7 pontos visíveis na tela
+        # Garante que o gráfico tem dados suficientes para exibição
         if len(valores_grafico) < 7:
             valores_grafico = (valores_grafico + [valores_grafico[-1]] * (7 - len(valores_grafico)))
 
@@ -72,5 +72,3 @@ async def get_status():
             "losses": 0,
             "grafico": [0, 0, 0, 0, 0, 0, 0]
         }
-
-
