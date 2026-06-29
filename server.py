@@ -18,60 +18,69 @@ app.add_middleware(
 API_TOKEN = os.getenv("METAAPI_TOKEN", "").strip()
 ACCOUNT_ID = os.getenv("META_ACCOUNT_ID", "").strip()
 
-# Variável global para evitar múltiplas ordens abertas ao mesmo tempo no mesmo segundo
+# Trava de segurança para evitar ordens duplicadas no mesmo segundo
 ordem_em_andamento = False
 
-async def executar_estrategia_instantanea(connection):
+async def executar_scalper_instantaneo(connection):
     global ordem_em_andamento
     if ordem_em_andamento:
         return
         
     try:
-        # 1. Pega os dados dos últimos candles para analisar a força e tendência da vela
-        # Alterado para buscar o par principal (ex: XAUUSD ou EURUSD) - Ajuste o símbolo se necessário
-        simbolo = "XAUUSD" 
-        candles = await connection.get_candles(simbolo, "m1", datetime.now() - timedelta(minutes=5), 5)
+        ordem_em_andamento = True
         
-        if not candles or len(candles) < 2:
+        # 1. VALIDAÇÃO DO ATIVO DA CONTA STANDARD (XAUUSDm)
+        simbolo = "XAUUSDm"
+        try:
+            # Testa se a conta responde ao símbolo com 'm'
+            candles = await connection.get_candles(simbolo, "m1", datetime.now() - timedelta(minutes=5), 5)
+        except:
+            # Caso contrário, usa o símbolo padrão
+            simbolo = "XAUUSD"
+            candles = await connection.get_candles(simbolo, "m1", datetime.now() - timedelta(minutes=5), 5)
+        
+        if not candles:
+            print("Não foi possível coletar os dados do gráfico.")
             return
 
         candle_atual = candles[-1]
-        
-        # 2. Verifica as posições abertas atuais para não sobrecarregar a conta
         posicoes = await connection.get_positions()
-        if len(posicoes) > 0:
-            return # Já existe operação aberta, aguarda fechar no Take Profit
-
-        # 3. ESTRATÉGIA DE FORÇA DOS CANDLES (AÇÃO IMEDIATA)
-        # Se a vela atual fechou acima da abertura (Vela Verde) -> Força de Alta -> COMPRA IMEDIATA
-        # Se a vela atual fechou abaixo da abertura (Vela Vermelha) -> Força de Baixa -> VENDA IMEDIATA
-        tendencia_alta = candle_atual['close'] > candle_atual['open']
         
+        # Se já houver uma operação aberta, aguarda ela bater no Take Profit para proteger a banca
+        if len(posicoes) > 0:
+            print("Robô aguardando a operação atual ser finalizada.")
+            return
+
+        # 2. ESTRATÉGIA SCALPER DE ALTA FREQUÊNCIA
+        # Analisa o fechamento imediato da vela (Open/Close) para medir a força e direção
+        tendencia_alta = candle_atual['close'] > candle_atual['open']
         lote = 0.07
         pips = 15
         
-        ordem_em_andamento = True
-        
+        # 3. ENVIO FORÇADO A MERCADO COM PROTOCOLO DE AUTO-CORREÇÃO (FOK / IOC)
         if tendencia_alta:
-            print(f"Detectada força de ALTA no candle. Enviando COMPRA de {lote}...")
-            # Envia a ordem com parâmetros de execução garantida para a Exness
-            result = await connection.create_market_buy_order(
-                simbolo, 
-                lote, 
-                {"takeProfit": pips, "fillingMode": "FOK"}
-            )
-            print("Ordem de Compra enviada:", result)
+            print(f"🔥 Força de COMPRA detectada em {simbolo}. Enviando ordem de {lote} lote...")
+            try:
+                # Tenta execução imediata Fill-or-Kill
+                await connection.create_market_buy_order(simbolo, lote, {"takeProfit": pips, "fillingMode": "FOK"})
+            except:
+                try:
+                    # Alternativa imediata caso a corretora recuse o FOK
+                    await connection.create_market_buy_order(simbolo, lote, {"takeProfit": pips, "fillingMode": "IOC"})
+                except Exception as e:
+                    print(f"Erro ao executar Compra na Exness: {str(e)}")
         else:
-            print(f"Detectada força de BAIXA no candle. Enviando VENDA de {lote}...")
-            result = await connection.create_market_sell_order(
-                simbolo, 
-                lote, 
-                {"takeProfit": pips, "fillingMode": "FOK"}
-            )
-            print("Ordem de Venda enviada:", result)
+            print(f"🔥 Força de VENDA detectada em {simbolo}. Enviando ordem de {lote} lote...")
+            try:
+                await connection.create_market_sell_order(simbolo, lote, {"takeProfit": pips, "fillingMode": "FOK"})
+            except:
+                try:
+                    await connection.create_market_sell_order(simbolo, lote, {"takeProfit": pips, "fillingMode": "IOC"})
+                except Exception as e:
+                    print(f"Erro ao executar Venda na Exness: {str(e)}")
             
     except Exception as e:
-        print(f"Erro ao tentar colocar ordem na corretora: {str(e)}")
+        print(f"Erro geral na verificação de ordens: {str(e)}")
     finally:
         ordem_em_andamento = False
 
@@ -92,11 +101,10 @@ async def get_status():
         await connection.connect()
         await connection.wait_synchronized()
         
-        # DISPARO DA LOGICA INSTANTÂNEA EM SEGUNDO PLANO
-        # Assim que você clica em Ativar, o robô roda a análise imediatamente
-        asyncio.create_task(executar_estrategia_instantanea(connection))
+        # DISPARO IMEDIATO NO EXATO SEGUNDO EM QUE VOCÊ ATIVA O ROBÔ
+        asyncio.create_task(executar_scalper_instantaneo(connection))
 
-        # Puxa o histórico de operações
+        # Puxa o histórico dos últimos 30 dias para atualizar os blocos de placar do app
         desde_data = datetime.now() - timedelta(days=30)
         historico = await connection.get_history_orders_by_time_range(desde_data, datetime.now())
         
@@ -122,4 +130,5 @@ async def get_status():
     except Exception as e:
         return {"status": "CONEXAO AGUARDANDO MERCADO", "wins": 0, "losses": 0, "grafico": [0]*7}
 
-
+        
+        
